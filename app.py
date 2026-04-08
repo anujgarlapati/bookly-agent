@@ -433,14 +433,6 @@ async def chat(request: Request):
             for phrase in ["only help with", "can't help with", "outside of what"]
         ) else "resolved_no_tool"
 
-    log("assistant_response", session_id,
-        turn=turn,
-        resolution=resolution,
-        tools_used=[tc["tool"] for tc in tool_calls_made],
-        total_latency_ms=total_ms)
-
-    conversations[session_id].append({"role": "assistant", "content": assistant_text})
-
     # Derive which AOP fired — included in the response for observability
     aop_triggered = None
     tool_names = [tc["tool"] for tc in tool_calls_made]
@@ -456,6 +448,15 @@ async def chat(request: Request):
         aop_triggered = "AOP-2"
     elif tool_calls_made:
         aop_triggered = "AOP-1"
+
+    log("assistant_response", session_id,
+        turn=turn,
+        resolution=resolution,
+        tools_used=[tc["tool"] for tc in tool_calls_made],
+        aop_triggered=aop_triggered,
+        total_latency_ms=total_ms)
+
+    conversations[session_id].append({"role": "assistant", "content": assistant_text})
 
     return {
         "response": assistant_text,
