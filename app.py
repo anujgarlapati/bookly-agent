@@ -204,6 +204,40 @@ AOP-6 [INVALID INPUT]: If a lookup returns no order found, explain clearly, sugg
 
 AOP-7 [BRAND VOICE]: Warm, concise, professional. Use the customer's name when known. Customers want answers, not essays — be direct."""
 
+# ─── Sentiment Detection ──────────────────────────────────────────────────────
+
+_FRUSTRATED_LOWER = [
+    "unacceptable", "ridiculous", "terrible", "horrible", "awful", "disgusting",
+    "pathetic", "useless", "worthless", "garbage", "trash",
+    "furious", "angry", "outraged", "livid", "fed up", "sick of",
+    "this is a joke", "what a joke",
+    "worst", "never again", "no one helps", "nobody helps", "no one helped",
+    "keeps failing", "still broken", "still not", "still hasn't",
+    "weeks ago", "days ago", "been waiting",
+    "want a refund now", "demand a refund", "speak to a human", "speak to a person",
+    "real person", "talk to someone", "talk to a human", "talk to a real",
+    "escalate this", "i am done",
+    "not able to help", "cannot help",
+]
+_FRUSTRATED_CASE = ["NOW", "ASAP", "URGENT"]
+
+_POSITIVE_LOWER = [
+    "thank you", "thanks", "great", "awesome", "excellent", "perfect",
+    "love it", "love this", "happy", "pleased", "satisfied", "appreciate",
+    "wonderful", "fantastic", "amazing", "helpful", "very helpful",
+    "good job", "well done", "impressed",
+]
+
+
+def detect_sentiment(text: str) -> str:
+    lower = text.lower()
+    if any(kw in lower for kw in _FRUSTRATED_LOWER) or any(kw in text for kw in _FRUSTRATED_CASE):
+        return "frustrated"
+    if any(kw in lower for kw in _POSITIVE_LOWER):
+        return "positive"
+    return "neutral"
+
+
 # ─── Guardrails ───────────────────────────────────────────────────────────────
 
 # Pre-flight check for prompt injection — runs before every Claude API call
@@ -249,7 +283,20 @@ def execute_tool(name: str, input_data: dict) -> str:
         if order_id:
             order = ORDERS.get(order_id)
             if order:
-                return json.dumps(order, indent=2)
+                result = dict(order)
+                if order["status"] == "shipped" and order.get("tracking_number"):
+                    result["_proactive_hint"] = (
+                        "Order is in transit. If the customer seems concerned about delivery timing "
+                        "or the tracking hasn't updated, proactively offer to escalate to a human "
+                        "agent who can follow up with the carrier directly."
+                    )
+                elif order["status"] == "processing" and not order.get("tracking_number"):
+                    result["_proactive_hint"] = (
+                        "Order is still processing with no tracking assigned yet. Proactively reassure "
+                        "the customer about the expected timeline and offer to escalate if they need "
+                        "more urgent help."
+                    )
+                return json.dumps(result, indent=2)
             close = [oid for oid in ORDERS if oid.replace("BK-", "") in order_id or order_id.replace("BK-", "") in oid]
             hint = f" Did you mean {close[0]}?" if close else " Please double-check your confirmation email."
             return json.dumps({"error": f"No order found with ID '{order_id}'.{hint} You can also search by email address."})
@@ -332,7 +379,53 @@ def execute_tool(name: str, input_data: dict) -> str:
 # ─── Conversation + Event Storage (in-memory for prototype) ──────────────────
 
 conversations: dict[str, list] = {}
-EVENTS: dict[str, list] = {}  # Observability event log per session
+EVENTS: dict[str, list] = {}             # Observability event log per session
+CUSTOMER_PROFILES: dict[str, dict] = {}  # email → customer memory across sessions
+SESSION_EMAILS: dict[str, str] = {}      # session_id → email (discovered mid-session)
+
+
+def get_customer_context(session_id: str) -> str:
+    """Build a customer memory block to inject into the system prompt for returning customers."""
+    email = SESSION_EMAILS.get(session_id)
+    if not email or email not in CUSTOMER_PROFILES:
+        return ""
+    profile = CUSTOMER_PROFILES[email]
+    lines = ["\n\n--- RETURNING CUSTOMER CONTEXT ---"]
+    lines.append(f"Email: {email}")
+    if profile.get("session_count", 1) > 1:
+        lines.append(f"This customer has contacted support {profile['session_count']} times before.")
+    if profile.get("orders_seen"):
+        lines.append(f"Orders previously discussed: {', '.join(profile['orders_seen'])}")
+    if profile.get("escalated"):
+        lines.append("Note: This customer has been escalated to a human agent in a past session — handle with extra care.")
+    if profile.get("returned"):
+        lines.append(f"Previous returns initiated: {', '.join(profile['returned'])}")
+    lines.append("Greet this customer as a returning customer and briefly acknowledge their previous interaction (e.g. 'Welcome back — I can see you've reached out before.').")
+    lines.append("Use this context to personalise your response. Do not mention that you have a memory file.")
+    lines.append("--- END CUSTOMER CONTEXT ---")
+    return "\n".join(lines)
+
+
+def update_customer_profile(session_id: str, email: str, order_id: str = None,
+                            escalated: bool = False, returned: str = None):
+    """Update persistent customer memory when we learn something new about the customer."""
+    is_new_session = SESSION_EMAILS.get(session_id) != email
+    SESSION_EMAILS[session_id] = email
+
+    if email not in CUSTOMER_PROFILES:
+        CUSTOMER_PROFILES[email] = {"session_count": 0, "orders_seen": [], "escalated": False, "returned": []}
+
+    profile = CUSTOMER_PROFILES[email]
+    if is_new_session:
+        profile["session_count"] += 1
+        if profile["session_count"] > 1:
+            log("customer_recognized", session_id, email=email, total_sessions=profile["session_count"])
+    if order_id and order_id not in profile["orders_seen"]:
+        profile["orders_seen"].append(order_id)
+    if escalated:
+        profile["escalated"] = True
+    if returned and returned not in profile["returned"]:
+        profile["returned"].append(returned)
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -350,19 +443,24 @@ async def chat(request: Request):
 
     if session_id not in conversations:
         conversations[session_id] = []
-        log("session_start", session_id)
+        email = SESSION_EMAILS.get(session_id)
+        returning = email in CUSTOMER_PROFILES if email else False
+        log("session_start", session_id, returning_customer=returning)
+
+    sentiment = detect_sentiment(user_message)
 
     # ── Guardrail: prompt injection check ────────────────────────────────────
     if check_injection(user_message):
-        log("guardrail_blocked", session_id, reason="prompt_injection", input=user_message[:120])
+        log("guardrail_blocked", session_id, reason="prompt_injection", input=user_message[:120], sentiment=sentiment)
         return {
             "response": "I'm only able to help with Bookly customer support. How can I assist you with an order, return, or policy question?",
             "tool_calls": [],
             "flagged": True,
+            "sentiment": sentiment,
         }
 
     turn = len(conversations[session_id]) // 2 + 1
-    log("user_message", session_id, turn=turn, text=user_message[:200])
+    log("user_message", session_id, turn=turn, text=user_message[:200], sentiment=sentiment)
 
     conversations[session_id].append({"role": "user", "content": user_message})
     messages = conversations[session_id].copy()
@@ -373,10 +471,14 @@ async def chat(request: Request):
     max_iterations = 5
 
     for _ in range(max_iterations):
+        # Rebuild system prompt each iteration — customer context may have been
+        # discovered mid-session from a tool result in the previous iteration
+        system_prompt = SYSTEM_PROMPT + get_customer_context(session_id)
+
         response = client.messages.create(
             model=MODEL,
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=TOOLS,
             messages=messages,
         )
@@ -411,6 +513,22 @@ async def chat(request: Request):
                         success="error" not in parsed,
                         latency_ms=latency_ms)
 
+                    # ── Update customer memory ───────────────────────────────
+                    if block.name == "lookup_order" and "error" not in parsed:
+                        email = parsed.get("customer_email") or parsed.get("email")
+                        order_id = parsed.get("order_id")
+                        if email:
+                            update_customer_profile(session_id, email, order_id=order_id)
+                    elif block.name == "escalate_to_human" and parsed.get("success"):
+                        email = SESSION_EMAILS.get(session_id)
+                        if email:
+                            update_customer_profile(session_id, email, escalated=True)
+                    elif block.name == "initiate_return" and parsed.get("success"):
+                        email = SESSION_EMAILS.get(session_id)
+                        order_id = block.input.get("order_id")
+                        if email and order_id:
+                            update_customer_profile(session_id, email, returned=order_id)
+
             messages.append({"role": "user", "content": tool_results})
         else:
             break
@@ -430,7 +548,11 @@ async def chat(request: Request):
     elif not tool_calls_made:
         resolution = "deflected" if any(
             phrase in assistant_text.lower()
-            for phrase in ["only help with", "can't help with", "outside of what"]
+            for phrase in [
+                "only help with", "can't help with", "outside of what",
+                "not able to assist", "cannot help with", "unable to help with",
+                "that's outside", "not something i can", "outside my",
+            ]
         ) else "resolved_no_tool"
 
     # Derive which AOP fired — included in the response for observability
@@ -463,6 +585,7 @@ async def chat(request: Request):
         "tool_calls": tool_calls_made,
         "resolution": resolution,
         "aop_triggered": aop_triggered,
+        "sentiment": sentiment,
     }
 
 
