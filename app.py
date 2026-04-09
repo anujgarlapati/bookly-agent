@@ -202,7 +202,7 @@ AOP-5 [ESCALATION TRIGGER]: If the customer expresses frustration, anger, or use
 
 AOP-6 [INVALID INPUT]: If a lookup returns no order found, explain clearly, suggest the customer check their confirmation email, and offer to search by email address instead.
 
-AOP-7 [BRAND VOICE]: Warm, concise, professional. Use the customer's name when known. Customers want answers, not essays — be direct."""
+AOP-7 [BRAND VOICE]: Warm, concise, professional. Use the customer's name when known. Customers want answers, not essays — be direct. Only greet a customer as "Welcome back" if a RETURNING CUSTOMER CONTEXT block is present in your instructions — never infer returning status from order data alone."""
 
 # ─── Sentiment Detection ──────────────────────────────────────────────────────
 
@@ -390,6 +390,8 @@ def get_customer_context(session_id: str) -> str:
     if not email or email not in CUSTOMER_PROFILES:
         return ""
     profile = CUSTOMER_PROFILES[email]
+    if profile.get("session_count", 0) <= 1:
+        return ""
     lines = ["\n\n--- RETURNING CUSTOMER CONTEXT ---"]
     lines.append(f"Email: {email}")
     if profile.get("session_count", 1) > 1:
@@ -399,7 +401,7 @@ def get_customer_context(session_id: str) -> str:
     if profile.get("escalated"):
         lines.append("Note: This customer has been escalated to a human agent in a past session — handle with extra care.")
     if profile.get("returned"):
-        lines.append(f"Previous returns initiated: {', '.join(profile['returned'])}")
+        lines.append(f"Previous returns initiated: {', '.join(profile['returned'])}. Explicitly mention that this customer has previously returned an order when greeting them.")
     lines.append("Greet this customer as a returning customer and briefly acknowledge their previous interaction (e.g. 'Welcome back — I can see you've reached out before.').")
     lines.append("Use this context to personalise your response. Do not mention that you have a memory file.")
     lines.append("--- END CUSTOMER CONTEXT ---")
@@ -511,7 +513,8 @@ async def chat(request: Request):
                         tool=block.name,
                         input=block.input,
                         success="error" not in parsed,
-                        latency_ms=latency_ms)
+                        latency_ms=latency_ms,
+                        **( {"proactive_hint": parsed["_proactive_hint"]} if "_proactive_hint" in parsed else {} ))
 
                     # ── Update customer memory ───────────────────────────────
                     if block.name == "lookup_order" and "error" not in parsed:
@@ -549,7 +552,7 @@ async def chat(request: Request):
         resolution = "deflected" if any(
             phrase in assistant_text.lower()
             for phrase in [
-                "only help with", "can't help with", "outside of what",
+                "only help with", "only able to help", "can't help with", "outside of what",
                 "not able to assist", "cannot help with", "unable to help with",
                 "that's outside", "not something i can", "outside my",
             ]

@@ -47,10 +47,10 @@ The agent handles three core customer support workflows:
 
 ## Workflows
 
-Use the sidebar in the UI, or type these directly. Mock order data (BK-4821, BK-5102, BK-3399) is shown in the sidebar for reference. 
+The sidebar has pre-filled, clickable prompts for each workflow — use them to quickly demo the agent, or type your own. Mock order data (BK-4821, BK-5102, BK-3399) is shown in the sidebar for reference only and would never be visible to real customers.
 
 
-| Scenario                         | What to type                                                                                                                                                                                                                       |
+| Workflow                         | What to type                                                                                                                                                                                                                       |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Order status lookup              | `Where is my order BK-4821?`                                                                                                                                                                                                       |
 | Return flow (multi-turn)         | `I want to return a book I ordered`                                                                                                                                                                                                |
@@ -89,15 +89,17 @@ Running Bookly eval suite against http://localhost:8000
 Results: 10 passed, 0 failed  (10 total)
 ```
 
+> **Note:** The `proactive_suggestion` and `persistent_memory` tests verify the underlying mechanics (hint injection and customer profile creation) rather than Claude's exact response — those are best verified manually using the steps in each feature section below.
+
 ### Sentiment Scoring
 
 Every user message is scored as `positive`, `neutral`, or `frustrated` using keyword detection — before it reaches Claude. The sentiment is logged on every `user_message` event and returned in the API response, enabling downstream analytics on customer health trends.
 
 ### Persistent Customer Memory
 
-When a customer's email is discovered via an order lookup, a profile is created storing their order history, escalation history, and return history. On return visits (within the same server run), that context is injected into the system prompt and Claude greets them as a returning customer — no re-introduction needed.
+When a customer's email is discovered via an order lookup, a profile is created storing their order history, escalation history, and return history. On return visits (within the same server run), that context is injected into the system prompt and Claude greets them as a returning customer — no re-introduction needed. In production, this would be backed by a persistent store such as Redis or Postgres.
 
-> **To test:** Ask about `BK-4821` in one session, click New Chat, then ask about `sarah.chen@email.com`. Claude will greet her as a returning customer.
+> **To test:** Ask about `BK-4821` in one session, click New Chat, then ask about `sarah.chen@email.com`.  Will greet her as a returning customer.
 
 ### Proactive Suggestions
 
@@ -106,7 +108,7 @@ After a successful order lookup, the agent proactively surfaces help based on or
 - **Shipped orders** — offers to escalate to a human agent who can follow up with the carrier
 - **Processing orders with no tracking** — reassures the customer and offers escalation if urgent
 
-> **To test:** Ask `Where is my order BK-4821?` — Claude will proactively offer carrier escalation help without being prompted.
+> **To test:** Ask `Where is my order BK-4821? The tracking hasn't updated in days.` — will proactively offer to escalate to a human agent who can follow up with the carrier.
 
 ## Architecture
 
@@ -162,14 +164,14 @@ Each event includes a timestamp, event type, tool call details, latency in ms, r
 **Event types:**
 
 
-| Event                 | When it fires                                                                     |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `session_start`       | New conversation begins                                                           |
-| `customer_recognized` | Returning customer identified mid-session (includes `email`, `total_sessions`)    |
-| `user_message`        | Every user message (includes `sentiment`)                                         |
-| `tool_call`           | Every tool execution (includes input, success, latency)                           |
-| `guardrail_blocked`   | Prompt injection attempt detected                                                 |
-| `assistant_response`  | Every agent response (includes `resolution`, `aop_triggered`, `total_latency_ms`) |
+| Event                 | When it fires                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `session_start`       | New conversation begins                                                            |
+| `customer_recognized` | Returning customer identified mid-session (includes `email`, `total_sessions`)     |
+| `user_message`        | Every user message (includes `sentiment`)                                          |
+| `tool_call`           | Every tool execution (includes input, success, latency, proactive_hint if present) |
+| `guardrail_blocked`   | Prompt injection attempt detected                                                  |
+| `assistant_response`  | Every agent response (includes `resolution`, `aop_triggered`, `total_latency_ms`)  |
 
 
 ## Project Structure

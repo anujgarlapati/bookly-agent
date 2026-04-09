@@ -317,6 +317,7 @@
     </div>
     <div class="sidebar-section">
         <div class="sidebar-section-title">Try a workflow</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;">Pre-filled examples — click to send</div>
         <div class="scenario-card" onclick="sendQuick('Where is my order BK-4821?')">
             <div class="scenario-card-title">Order status lookup</div>
             <div class="scenario-card-desc">Look up a shipped order by ID and get tracking info.</div>
@@ -363,9 +364,9 @@
         <table class="mock-table">
             <thead><tr><th>Order</th><th>Status</th><th>Customer</th></tr></thead>
             <tbody>
-                <tr><td class="mono">BK-4821</td><td><span class="status-badge status-shipped">Shipped</span></td><td>sarah.chen</td></tr>
-                <tr><td class="mono">BK-5102</td><td><span class="status-badge status-delivered">Delivered</span></td><td>james.w</td></tr>
-                <tr><td class="mono">BK-3399</td><td><span class="status-badge status-processing">Processing</span></td><td>sarah.chen</td></tr>
+                <tr><td class="mono">BK-4821</td><td><span class="status-badge status-shipped">Shipped</span></td><td>sarah.chen@email.com</td></tr>
+                <tr><td class="mono">BK-5102</td><td><span class="status-badge status-delivered">Delivered</span></td><td>james.w@email.com</td></tr>
+                <tr><td class="mono">BK-3399</td><td><span class="status-badge status-processing">Processing</span></td><td>sarah.chen@email.com</td></tr>
             </tbody>
         </table>
     </div>
@@ -408,7 +409,7 @@
 </div>
 
 <script>
-const sessionId = 'session_' + Math.random().toString(36).substring(2);
+let sessionId = 'session_' + Math.random().toString(36).substring(2);
 let isWaiting = false;
 
 function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
@@ -595,6 +596,7 @@ async function sendMessage() {
 
 async function resetChat() {
     await fetch('/api/reset', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({session_id:sessionId}) });
+    sessionId = 'session_' + Math.random().toString(36).substring(2);
     document.getElementById('messages').innerHTML = `
         <div class="welcome" id="welcome">
             <div class="welcome-icon">📚</div>
