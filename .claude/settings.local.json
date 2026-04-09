@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(pdftotext \"/Users/anujgarlapati/Desktop/projects/decagon-interview/SE Take-Home Final\" -)",
-      "Bash(pdftotext \"/Users/anujgarlapati/Desktop/projects/decagon-interview/SE Take-Home Final\" /tmp/assignment.txt)",
-      "Read(//tmp/**)"
-    ]
-  }
-}
